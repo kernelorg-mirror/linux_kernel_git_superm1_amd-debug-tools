@@ -1,0 +1,5 @@
+amd-debug-tools (0.2.5-1) unstable; urgency=medium
+
+  * Initial release. (Closes: #1110884)
+
+ -- Mario Limonciello <superm1@debian.org>  Mon, 11 Aug 2025 16:10:29 -0500

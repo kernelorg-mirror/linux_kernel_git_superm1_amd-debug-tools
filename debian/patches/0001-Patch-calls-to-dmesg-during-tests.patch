@@ -1,0 +1,104 @@
+From c8bf8493e5e19cdcb9aeff7e6c6f5a3145be12cf Mon Sep 17 00:00:00 2001
+From: "Mario Limonciello (AMD)" <superm1@kernel.org>
+Date: Mon, 11 Aug 2025 15:47:54 -0500
+Subject: [PATCH] Patch calls to `dmesg` during tests
+
+These won't work in the chroot for some OSes.
+
+Signed-off-by: Mario Limonciello (AMD) <superm1@kernel.org>
+---
+ src/test_bios.py      | 24 ++++++++++++++++++++----
+ src/test_kernel.py    |  3 ++-
+ src/test_validator.py |  3 ++-
+ 3 files changed, 24 insertions(+), 6 deletions(-)
+
+diff --git a/src/test_bios.py b/src/test_bios.py
+index c780ed4..647fd0f 100644
+--- a/src/test_bios.py
++++ b/src/test_bios.py
+@@ -33,8 +33,14 @@ class TestAmdBios(unittest.TestCase):
+     @patch("amd_debug.bios.minimum_kernel")
+     @patch("amd_debug.bios.AcpicaTracer")
+     @patch("amd_debug.bios.print_color")
++    @patch("subprocess.run")
+     def test_set_tracing_enable(
+-        self, _mock_print, mock_acpica_tracer, mock_minimum_kernel, mock_relaunch_sudo
++        self,
++        _mock_run,
++        _mock_print,
++        mock_acpica_tracer,
++        mock_minimum_kernel,
++        mock_relaunch_sudo,
+     ):
+         """Test enabling tracing"""
+         mock_minimum_kernel.return_value = True
+@@ -53,8 +59,14 @@ class TestAmdBios(unittest.TestCase):
+     @patch("amd_debug.bios.minimum_kernel")
+     @patch("amd_debug.bios.AcpicaTracer")
+     @patch("amd_debug.bios.print_color")
++    @patch("subprocess.run")
+     def test_set_tracing_disable(
+-        self, _mock_print, mock_acpica_tracer, mock_minimum_kernel, mock_relaunch_sudo
++        self,
++        _mock_run,
++        _mock_print,
++        mock_acpica_tracer,
++        mock_minimum_kernel,
++        mock_relaunch_sudo,
+     ):
+         """Test disabling tracing"""
+         mock_minimum_kernel.return_value = True
+@@ -71,7 +83,10 @@ class TestAmdBios(unittest.TestCase):
+ 
+     @patch("amd_debug.bios.sscanf_bios_args")
+     @patch("amd_debug.bios.print_color")
+-    def test_analyze_kernel_log_line(self, mock_print_color, mock_sscanf_bios_args):
++    @patch("subprocess.run")
++    def test_analyze_kernel_log_line(
++        self, _mock_run, mock_print_color, mock_sscanf_bios_args
++    ):
+         """Test analyzing kernel log line"""
+         mock_sscanf_bios_args.return_value = "BIOS argument found"
+ 
+@@ -85,8 +100,9 @@ class TestAmdBios(unittest.TestCase):
+ 
+     @patch("amd_debug.bios.sscanf_bios_args")
+     @patch("amd_debug.bios.print_color")
++    @patch("subprocess.run")
+     def test_analyze_kernel_log_line_no_bios_args(
+-        self, mock_print_color, mock_sscanf_bios_args
++        self, _mock_run, mock_print_color, mock_sscanf_bios_args
+     ):
+         """Test analyzing kernel log line with no BIOS arguments"""
+         mock_sscanf_bios_args.return_value = None
+diff --git a/src/test_kernel.py b/src/test_kernel.py
+index b46611c..b96e234 100644
+--- a/src/test_kernel.py
++++ b/src/test_kernel.py
+@@ -114,7 +114,8 @@ class TestDmesgLogger(unittest.TestCase):
+     """Test Dmesg logger functions"""
+ 
+     @classmethod
+-    def setUpClass(cls):
++    @patch("subprocess.run")
++    def setUpClass(cls, _mock_run=None):
+         logging.basicConfig(filename="/dev/null", level=logging.DEBUG)
+ 
+     def test_dmesg_logger_initialization(self):
+diff --git a/src/test_validator.py b/src/test_validator.py
+index 4fb588f..cbc13c1 100644
+--- a/src/test_validator.py
++++ b/src/test_validator.py
+@@ -71,7 +71,8 @@ class TestValidator(unittest.TestCase):
+         logging.basicConfig(filename="/dev/null", level=logging.DEBUG)
+ 
+     @patch("amd_debug.validator.SleepDatabase")
+-    def setUp(self, _db_mock):
++    @patch("subprocess.run")
++    def setUp(self, _db_mock, _mock_run):
+         """Set up a mock context for testing"""
+         self.validator = SleepValidator(tool_debug=True, bios_debug=False)
+ 
+-- 
+2.43.0
+
