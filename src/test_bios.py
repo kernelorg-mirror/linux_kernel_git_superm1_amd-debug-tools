@@ -33,8 +33,14 @@ class TestAmdBios(unittest.TestCase):
     @patch("amd_debug.bios.minimum_kernel")
     @patch("amd_debug.bios.AcpicaTracer")
     @patch("amd_debug.bios.print_color")
+    @patch("subprocess.run")
     def test_set_tracing_enable(
-        self, _mock_print, mock_acpica_tracer, mock_minimum_kernel, mock_relaunch_sudo
+        self,
+        _mock_run,
+        _mock_print,
+        mock_acpica_tracer,
+        mock_minimum_kernel,
+        mock_relaunch_sudo,
     ):
         """Test enabling tracing"""
         mock_minimum_kernel.return_value = True
@@ -53,8 +59,14 @@ class TestAmdBios(unittest.TestCase):
     @patch("amd_debug.bios.minimum_kernel")
     @patch("amd_debug.bios.AcpicaTracer")
     @patch("amd_debug.bios.print_color")
+    @patch("subprocess.run")
     def test_set_tracing_disable(
-        self, _mock_print, mock_acpica_tracer, mock_minimum_kernel, mock_relaunch_sudo
+        self,
+        _mock_run,
+        _mock_print,
+        mock_acpica_tracer,
+        mock_minimum_kernel,
+        mock_relaunch_sudo,
     ):
         """Test disabling tracing"""
         mock_minimum_kernel.return_value = True
@@ -71,7 +83,10 @@ class TestAmdBios(unittest.TestCase):
 
     @patch("amd_debug.bios.sscanf_bios_args")
     @patch("amd_debug.bios.print_color")
-    def test_analyze_kernel_log_line(self, mock_print_color, mock_sscanf_bios_args):
+    @patch("subprocess.run")
+    def test_analyze_kernel_log_line(
+        self, _mock_run, mock_print_color, mock_sscanf_bios_args
+    ):
         """Test analyzing kernel log line"""
         mock_sscanf_bios_args.return_value = "BIOS argument found"
 
@@ -85,8 +100,9 @@ class TestAmdBios(unittest.TestCase):
 
     @patch("amd_debug.bios.sscanf_bios_args")
     @patch("amd_debug.bios.print_color")
+    @patch("subprocess.run")
     def test_analyze_kernel_log_line_no_bios_args(
-        self, mock_print_color, mock_sscanf_bios_args
+        self, _mock_run, mock_print_color, mock_sscanf_bios_args
     ):
         """Test analyzing kernel log line with no BIOS arguments"""
         mock_sscanf_bios_args.return_value = None
@@ -140,12 +156,12 @@ class TestAmdBios(unittest.TestCase):
         self.assertFalse(args.enable)
         self.assertTrue(args.disable)
 
-    @patch("sys.argv", ["bios.py", "version"])
+    @patch("sys.argv", ["bios.py", "--version"])
     def test_parse_args_version_command(self):
         """Test parse_args with version command"""
 
         args = parse_args()
-        self.assertEqual(args.command, "version")
+        self.assertTrue(args.version)
 
     @patch("sys.argv", ["bios.py"])
     @patch("argparse.ArgumentParser.print_help")
@@ -227,7 +243,7 @@ class TestAmdBios(unittest.TestCase):
         self, _mock_print, mock_show_log_info, mock_version, mock_parse_args
     ):
         """Test main function with version command"""
-        mock_parse_args.return_value = argparse.Namespace(command="version")
+        mock_parse_args.return_value = argparse.Namespace(version=True, command=None)
         mock_version.return_value = "1.0.0"
 
         result = main()
@@ -241,7 +257,9 @@ class TestAmdBios(unittest.TestCase):
     @patch("amd_debug.bios.show_log_info")
     def test_main_invalid_command(self, mock_show_log_info, mock_parse_args):
         """Test main function with an invalid command"""
-        mock_parse_args.return_value = argparse.Namespace(command="invalid")
+        mock_parse_args.return_value = argparse.Namespace(
+            version=False, command="invalid"
+        )
 
         result = main()
 

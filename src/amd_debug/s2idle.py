@@ -1,4 +1,3 @@
-#!/usr/bin/python3
 # SPDX-License-Identifier: MIT
 """s2idle analysis tool"""
 import argparse
@@ -75,7 +74,7 @@ def display_report_file(fname, fmt) -> None:
 def get_report_file(report_file, extension) -> str:
     """Prompt user for report file"""
     if extension == "stdout":
-        return None
+        return ""
     if not report_file:
         return f"amd-s2idle-report-{date.today()}.{extension}"
     return report_file
@@ -88,7 +87,7 @@ def get_report_format() -> str:
     return "html"
 
 
-def prompt_report_arguments(since, until, fname, fmt, report_debug) -> str:
+def prompt_report_arguments(since, until, fname, fmt, report_debug) -> list:
     """Prompt user for report configuration"""
     if not since:
         default = Defaults.since
@@ -213,8 +212,10 @@ def run_test_cycle(
 
     try:
         duration, wait, count = prompt_test_arguments(duration, wait, count, rand)
+        total_seconds = (duration + wait) * count
+        until_time = datetime.now() + timedelta(seconds=total_seconds)
         since, until, fname, fmt, report_debug = prompt_report_arguments(
-            datetime.now().isoformat(), Defaults.until.isoformat(), fname, fmt, True
+            datetime.now().isoformat(), until_time.isoformat(), fname, fmt, True
         )
     except KeyboardInterrupt:
         sys.exit("\nTest cancelled")
@@ -385,7 +386,9 @@ def parse_args():
             help="Enable tool debug logging",
         )
 
-    subparsers.add_parser("version", help="Show version information")
+    parser.add_argument(
+        "--version", action="store_true", help="Show version information"
+    )
 
     if len(sys.argv) == 1:
         parser.print_help(sys.stderr)
@@ -394,7 +397,7 @@ def parse_args():
     return parser.parse_args()
 
 
-def main() -> None|int:
+def main() -> None | int:
     """Main function"""
     args = parse_args()
     ret = False
@@ -427,7 +430,7 @@ def main() -> None|int:
             args.logind,
             args.bios_debug,
         )
-    elif args.action == "version":
+    elif args.version:
         print(version())
         return
     else:

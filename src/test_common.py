@@ -4,17 +4,21 @@
 """
 This module contains unit tests for the common functions in the amd-debug-tools package.
 """
-from unittest.mock import patch, mock_open, call
+from unittest.mock import patch, mock_open, call, Mock
 
+import asyncio
+import builtins
 import logging
 import tempfile
 import unittest
 import os
 from platform import uname_result
+import sys
 
 
 from amd_debug.common import (
     apply_prefix_wrapper,
+    bytes_to_gb,
     Colors,
     convert_string_to_bool,
     colorize_choices,
@@ -22,12 +26,15 @@ from amd_debug.common import (
     compare_file,
     find_ip_version,
     fatal_error,
+    gb_to_pages,
     get_distro,
     get_log_priority,
     get_pretty_distro,
+    get_system_mem,
     is_root,
     minimum_kernel,
     print_color,
+    reboot,
     run_countdown,
     systemd_in_use,
     running_ssh,
@@ -45,6 +52,7 @@ color_dict = {
     "○": Colors.OK,
     "💤": Colors.OK,
     "💯": Colors.UNDERLINE,
+    "🚫": Colors.UNDERLINE,
     "🗣️": Colors.HEADER,
 }
 
@@ -442,3 +450,111 @@ class TestCommon(unittest.TestCase):
         with patch("sys.exit") as mock_exit:
             convert_string_to_bool("[unclosed_list")
             mock_exit.assert_called_once_with("Invalid entry: [unclosed_list")
+
+    def test_bytes_to_gb(self):
+        """Test bytes_to_gb conversion"""
+        # 4096 bytes should be 4096*4096/(1024*1024*1024) GB
+        self.assertAlmostEqual(bytes_to_gb(1), 4096 / (1024 * 1024 * 1024))
+        self.assertAlmostEqual(bytes_to_gb(0), 0)
+        self.assertAlmostEqual(bytes_to_gb(1024), 1024 * 4096 / (1024 * 1024 * 1024))
+
+    def test_gb_to_pages(self):
+        """Test gb_to_pages conversion"""
+        # 1 GB should be int(1 * (1024*1024*1024) / 4096)
+        self.assertEqual(gb_to_pages(1), int((1024 * 1024 * 1024) / 4096))
+        self.assertEqual(gb_to_pages(0), 0)
+        self.assertEqual(gb_to_pages(2), int(2 * (1024 * 1024 * 1024) / 4096))
+
+    @patch(
+        "builtins.open",
+        new_callable=mock_open,
+        read_data="MemTotal:       16384516 kB\n",
+    )
+    @patch("os.path.join", return_value="/proc/meminfo")
+    def test_get_system_mem_valid(self, _mock_join, mock_file):
+        """Test get_system_mem returns correct value"""
+        expected_gb = 16384516 / (1024 * 1024)
+        self.assertAlmostEqual(get_system_mem(), expected_gb)
+        mock_file.assert_called_once_with("/proc/meminfo", "r", encoding="utf-8")
+
+    def test_reboot_dbus_fast_success(self):
+        """Test reboot returns True when reboot_dbus_fast succeeds"""
+
+        # Create a mock loop that properly handles coroutines
+        def mock_run_until_complete(coro):
+            # Consume the coroutine to prevent the warning
+            try:
+                # Close the coroutine to prevent the warning
+                coro.close()
+            except (AttributeError, RuntimeError):
+                pass
+            return True
+
+        mock_loop = Mock()
+        mock_loop.run_until_complete.side_effect = mock_run_until_complete
+
+        with patch("amd_debug.common.asyncio.get_event_loop", return_value=mock_loop):
+            result = reboot()
+            self.assertTrue(result)
+            mock_loop.run_until_complete.assert_called_once()
+
+    @patch("asyncio.get_event_loop")
+    def test_reboot_dbus_fast_failure_and_dbus_success(self, mock_get_event_loop):
+        """Test reboot falls back to reboot_dbus when reboot_dbus_fast fails"""
+
+        # Create a mock loop that properly handles coroutines
+        def mock_run_until_complete(coro):
+            # Consume the coroutine to prevent the warning
+            try:
+                coro.close()
+            except (AttributeError, RuntimeError):
+                pass
+            return False
+
+        mock_loop = Mock()
+        mock_loop.run_until_complete.side_effect = mock_run_until_complete
+        mock_get_event_loop.return_value = mock_loop
+
+        # Mock the dbus module to avoid ImportError in CI
+        mock_dbus = Mock()
+        mock_bus = Mock()
+        mock_obj = Mock()
+        mock_intf = Mock()
+
+        mock_dbus.SystemBus.return_value = mock_bus
+        mock_bus.get_object.return_value = mock_obj
+        mock_obj.get_interface.return_value = mock_intf
+        mock_dbus.Interface = Mock(return_value=mock_intf)
+
+        with patch.dict("sys.modules", {"dbus": mock_dbus}):
+            result = reboot()
+            self.assertTrue(result)
+
+    @patch("asyncio.get_event_loop")
+    def test_reboot_dbus_fast_failure_and_dbus_failure(self, mock_get_event_loop):
+        """Test reboot returns False when both reboot_dbus_fast and reboot_dbus fail"""
+
+        # Create a mock loop that properly handles coroutines
+        def mock_run_until_complete(coro):
+            # Consume the coroutine to prevent the warning
+            try:
+                coro.close()
+            except (AttributeError, RuntimeError):
+                pass
+            return False
+
+        mock_loop = Mock()
+        mock_loop.run_until_complete.side_effect = mock_run_until_complete
+        mock_get_event_loop.return_value = mock_loop
+
+        # Mock the import to raise ImportError when dbus is imported
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "dbus":
+                raise ImportError("No module named 'dbus'")
+            return original_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=mock_import):
+            result = reboot()
+            self.assertFalse(result)

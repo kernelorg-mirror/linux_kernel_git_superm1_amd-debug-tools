@@ -1,4 +1,3 @@
-#!/usr/bin/python3
 # SPDX-License-Identifier: MIT
 
 """
@@ -21,7 +20,7 @@ import pyudev
 
 from amd_debug.wake import WakeIRQ
 from amd_debug.display import Display
-from amd_debug.kernel import get_kernel_log, SystemdLogger, DmesgLogger
+from amd_debug.kernel import get_kernel_log, SystemdLogger, CySystemdLogger, DmesgLogger
 from amd_debug.common import (
     apply_prefix_wrapper,
     BIT,
@@ -58,6 +57,7 @@ from amd_debug.failures import (
     MissingAmdgpu,
     MissingAmdgpuFirmware,
     MissingAmdPmc,
+    MissingGpu,
     MissingDriver,
     MissingIommuACPI,
     MissingIommuPolicy,
@@ -128,13 +128,35 @@ class PrerequisiteValidator(AmdTool):
         if not self.db.get_last_prereq_ts():
             self.run()
 
+    def capture_nvidia(self):
+        """Capture the NVIDIA GPU state"""
+        p = os.path.join("/", "proc", "driver", "nvidia", "version")
+        if not os.path.exists(p):
+            return True
+        try:
+            self.db.record_debug_file(p)
+        except PermissionError:
+            self.db.record_prereq("NVIDIA GPU version not readable", "👀")
+            return True
+        p = os.path.join("/", "proc", "driver", "nvidia", "gpus")
+        if not os.path.exists(p):
+            return True
+        for root, _dirs, files in os.walk(p, topdown=False):
+            for f in files:
+                try:
+                    self.db.record_debug(f"NVIDIA {f}")
+                    self.db.record_debug_file(os.path.join(root, f))
+                except PermissionError:
+                    self.db.record_prereq("NVIDIA GPU {f} not readable", "👀")
+        return True
+
     def capture_edid(self):
         """Capture and decode the EDID data"""
         edids = self.display.get_edid()
         if len(edids) == 0:
             self.db.record_debug("No EDID data found")
             return True
-        for name, p in edids.items():
+        for p in edids:
             output = None
             for tool in ["di-edid-decode", "edid-decode"]:
                 try:
@@ -145,16 +167,17 @@ class PrerequisiteValidator(AmdTool):
                     break
                 except FileNotFoundError:
                     self.db.record_debug(f"{cmd} not installed")
-                except subprocess.CalledProcessError as e:
+                except subprocess.CalledProcessError as _e:
                     pass
             if not output:
                 self.db.record_prereq("Failed to capture EDID table", "👀")
             else:
-                self.db.record_debug(apply_prefix_wrapper(f"EDID for {name}:", output))
+                self.db.record_debug(apply_prefix_wrapper(f"EDID for {p}:", output))
         return True
 
     def check_amdgpu(self):
         """Check for the AMDGPU driver"""
+        count = 0
         for device in self.pyudev.list_devices(subsystem="pci"):
             klass = device.properties.get("PCI_CLASS")
             if klass not in ["30000", "38000"]:
@@ -162,6 +185,7 @@ class PrerequisiteValidator(AmdTool):
             pci_id = device.properties.get("PCI_ID")
             if not pci_id.startswith("1002"):
                 continue
+            count += 1
             if device.properties.get("DRIVER") != "amdgpu":
                 self.db.record_prereq("GPU driver `amdgpu` not loaded", "❌")
                 self.failures += [MissingAmdgpu()]
@@ -169,6 +193,10 @@ class PrerequisiteValidator(AmdTool):
             slot = device.properties.get("PCI_SLOT_NAME")
 
             self.db.record_prereq(f"GPU driver `amdgpu` bound to {slot}", "✅")
+        if count == 0:
+            self.db.record_prereq("Integrated GPU not found", "❌")
+            self.failures += [MissingGpu()]
+            return False
         return True
 
     def check_amdgpu_parameters(self):
@@ -650,7 +678,9 @@ class PrerequisiteValidator(AmdTool):
         """Check the source for kernel logs"""
         if isinstance(self.kernel_log, SystemdLogger):
             self.db.record_prereq("Logs are provided via systemd", "✅")
-        if isinstance(self.kernel_log, DmesgLogger):
+        elif isinstance(self.kernel_log, CySystemdLogger):
+            self.db.record_prereq("Logs are provided via cysystemd", "✅")
+        elif isinstance(self.kernel_log, DmesgLogger):
             self.db.record_prereq(
                 "Logs are provided via dmesg, timestamps may not be accurate over multiple cycles",
                 "🚦",
@@ -718,6 +748,9 @@ class PrerequisiteValidator(AmdTool):
             p = os.path.join("/", "sys", "kernel", "debug", "gpio")
             try:
                 contents = read_file(p)
+            except FileNotFoundError:
+                self.db.record_prereq("GPIO debugfs not available", "👀")
+                contents = None
             except PermissionError:
                 self.db.record_debug(f"Unable to capture {p}")
                 contents = None
@@ -754,7 +787,7 @@ class PrerequisiteValidator(AmdTool):
                     "utf-8"
                 )
             except FileNotFoundError:
-                self.db.record_prereq(f"ethtool is missing", "👀")
+                self.db.record_prereq("ethtool is missing", "👀")
                 return True
             for line in output.split("\n"):
                 if "Supports Wake-on" in line:
@@ -1007,6 +1040,21 @@ class PrerequisiteValidator(AmdTool):
                     shutil.rmtree(tmpd)
         return True
 
+    def capture_cstates(self):
+        """Capture ACPI C state information for the first CPU (assumes the same for all CPUs)"""
+        base = os.path.join("/", "sys", "bus", "cpu", "devices", "cpu0", "cpuidle")
+        paths = {}
+        for root, _dirs, files in os.walk(base, topdown=False):
+            for fname in files:
+                target = os.path.join(root, fname)
+                with open(target, "rb") as f:
+                    paths[target] = f.read()
+        debug_str = "ACPI C-state information\n"
+        for path, data in paths.items():
+            prefix = "│ " if path != list(paths.keys())[-1] else "└─"
+            debug_str += f"{prefix}{path}: {data.decode('utf-8', 'ignore')}"
+        self.db.record_debug(debug_str)
+
     def capture_battery(self):
         """Capture battery information"""
         obj = Batteries()
@@ -1140,7 +1188,6 @@ class PrerequisiteValidator(AmdTool):
         if self.cpu_family == 0x1A and self.cpu_model in affected_1a:
             found_iommu = False
             found_acpi = False
-            found_dmar = False
             for dev in self.pyudev.list_devices(subsystem="iommu"):
                 found_iommu = True
                 debug_str += f"Found IOMMU {dev.sys_path}\n"
@@ -1227,9 +1274,8 @@ class PrerequisiteValidator(AmdTool):
         # ignore kernel warnings
         taint &= ~BIT(9)
         if taint != 0:
-            self.db.record_prereq(f"Kernel is tainted: {taint}", "❌")
+            self.db.record_prereq(f"Kernel is tainted: {taint}", "🚦")
             self.failures += [TaintedKernel()]
-            return False
         return True
 
     def run(self):
@@ -1244,6 +1290,8 @@ class PrerequisiteValidator(AmdTool):
             self.capture_logind,
             self.capture_pci_acpi,
             self.capture_edid,
+            self.capture_nvidia,
+            self.capture_cstates,
         ]
         checks = []
 
@@ -1296,7 +1344,7 @@ class PrerequisiteValidator(AmdTool):
             if not check():
                 result = False
         if not result:
-            self.db.record_prereq(Headers.BrokenPrerequisites, "💯")
+            self.db.record_prereq(Headers.BrokenPrerequisites, "🚫")
         self.db.sync()
         clear_temporary_message(len(msg))
         return result
@@ -1315,7 +1363,7 @@ class PrerequisiteValidator(AmdTool):
                     logging.debug(line)
 
         if len(self.failures) == 0:
-            return True
+            return
         print_color(Headers.ExplanationReport, "🗣️")
         for item in self.failures:
             item.get_failure()

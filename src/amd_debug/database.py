@@ -1,4 +1,3 @@
-#!/usr/bin/python3
 # SPDX-License-Identifier: MIT
 
 from datetime import datetime
@@ -99,8 +98,8 @@ class SleepDatabase:
 
     def start_cycle(self, timestamp):
         """Start a new sleep cycle"""
+        assert self.db
         self.last_suspend = timestamp
-
         # increment the counters so that systemd hooks work
         cur = self.db.cursor()
         cur.execute(
@@ -124,11 +123,13 @@ class SleepDatabase:
 
     def sync(self) -> None:
         """Sync the database to disk"""
+        assert self.db
         self.db.commit()
 
     def record_debug(self, message, level=6) -> None:
         """Helper function to record a message to debug database"""
         assert self.last_suspend
+        assert self.db
         cur = self.db.cursor()
         cur.execute(
             "INSERT into debug (t0, id, message, priority) VALUES (?, ?, ?, ?)",
@@ -151,6 +152,8 @@ class SleepDatabase:
 
     def record_battery_energy(self, name, energy, full, unit):
         """Helper function to record battery energy"""
+        assert self.db
+        assert self.last_suspend
         cur = self.db.cursor()
         cur.execute(
             "SELECT * FROM battery WHERE t0=?",
@@ -180,6 +183,7 @@ class SleepDatabase:
     def record_cycle_data(self, message, symbol) -> None:
         """Helper function to record a message to cycle_data database"""
         assert self.last_suspend
+        assert self.db
         cur = self.db.cursor()
         cur.execute(
             """
@@ -207,6 +211,7 @@ class SleepDatabase:
     ) -> None:
         """Helper function to record a sleep cycle into the cycle database"""
         assert self.last_suspend
+        assert self.db
         cur = self.db.cursor()
         cur.execute(
             """
@@ -227,6 +232,7 @@ class SleepDatabase:
     def record_prereq(self, message, symbol) -> None:
         """Helper function to record a message to prereq_data database"""
         assert self.last_suspend
+        assert self.db
         cur = self.db.cursor()
         cur.execute(
             """
@@ -246,6 +252,7 @@ class SleepDatabase:
 
     def report_prereq(self, t0) -> list:
         """Helper function to report the prereq_data database"""
+        assert self.db
         if t0 is None:
             return []
         cur = self.db.cursor()
@@ -255,10 +262,11 @@ class SleepDatabase:
         )
         return cur.fetchall()
 
-    def report_debug(self, t0) -> str:
+    def report_debug(self, t0) -> list:
         """Helper function to report the debug database"""
+        assert self.db
         if t0 is None:
-            return ""
+            return []
         cur = self.db.cursor()
         cur.execute(
             "SELECT message, priority FROM debug WHERE t0=?",
@@ -268,6 +276,7 @@ class SleepDatabase:
 
     def report_cycle(self, t0=None) -> list:
         """Helper function to report a cycle from database"""
+        assert self.db
         if t0 is None:
             assert self.last_suspend
             t0 = self.last_suspend
@@ -280,7 +289,9 @@ class SleepDatabase:
 
     def report_cycle_data(self, t0=None) -> str:
         """Helper function to report a table matching a timestamp from cycle_data database"""
+        assert self.db
         if t0 is None:
+            assert self.last_suspend
             t0 = self.last_suspend
         cur = self.db.cursor()
         cur.execute(
@@ -294,7 +305,9 @@ class SleepDatabase:
 
     def report_battery(self, t0=None) -> list:
         """Helper function to report a line from battery database"""
+        assert self.db
         if t0 is None:
+            assert self.last_suspend
             t0 = self.last_suspend
         cur = self.db.cursor()
         cur.execute(
@@ -305,19 +318,23 @@ class SleepDatabase:
 
     def get_last_prereq_ts(self) -> int:
         """Helper function to report the last line from prereq database"""
+        assert self.db
         cur = self.db.cursor()
         cur.execute("SELECT * FROM prereq_data ORDER BY t0 DESC LIMIT 1")
         result = cur.fetchone()
-        return result[0] if result else None
+        return result[0] if result else 0
 
     def get_last_cycle(self) -> list:
         """Helper function to report the last line from battery database"""
+        assert self.db
         cur = self.db.cursor()
         cur.execute("SELECT t0 FROM cycle ORDER BY t0 DESC LIMIT 1")
         return cur.fetchone()
 
     def report_summary_dataframe(self, since, until) -> object:
         """Helper function to report a dataframe from the database"""
+        assert self.db
+
         import pandas as pd  # pylint: disable=import-outside-toplevel
 
         pd.set_option("display.precision", 2)

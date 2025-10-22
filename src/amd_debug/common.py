@@ -1,10 +1,10 @@
-#!/usr/bin/python3
 # SPDX-License-Identifier: MIT
 
 """
 This module contains common utility functions and classes for various amd-debug-tools.
 """
 
+import asyncio
 import importlib.metadata
 import logging
 import os
@@ -12,7 +12,6 @@ import platform
 import time
 import struct
 import subprocess
-import re
 import sys
 from ast import literal_eval
 from datetime import date, timedelta
@@ -47,7 +46,7 @@ def get_group_color(group) -> str:
         color = Colors.WARNING
     elif group == "🗣️":
         color = Colors.HEADER
-    elif group == "💯":
+    elif any(mk in group for mk in ["💯", "🚫"]):
         color = Colors.UNDERLINE
     elif any(mk in group for mk in ["🦟", "🖴"]):
         color = Colors.DEBUG
@@ -224,6 +223,74 @@ def get_pretty_distro() -> str:
                     distro = line.split("=")[1].strip().strip('"')
                     break
     return distro
+
+
+def bytes_to_gb(bytes_value):
+    """Convert bytes to GB"""
+    return bytes_value * 4096 / (1024 * 1024 * 1024)
+
+
+def gb_to_pages(gb_value):
+    """Convert GB into bytes"""
+    return int(gb_value * (1024 * 1024 * 1024) / 4096)
+
+
+def reboot():
+    """Reboot the system"""
+
+    async def reboot_dbus_fast():
+        """Reboot using dbus-fast"""
+        try:
+            from dbus_fast.aio import (  # pylint: disable=import-outside-toplevel
+                MessageBus,
+            )
+            from dbus_fast import BusType  # pylint: disable=import-outside-toplevel
+
+            bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+            introspection = await bus.introspect(
+                "org.freedesktop.login1", "/org/freedesktop/login1"
+            )
+            proxy_obj = bus.get_proxy_object(
+                "org.freedesktop.login1", "/org/freedesktop/login1", introspection
+            )
+            interface = proxy_obj.get_interface("org.freedesktop.login1.Manager")
+            await interface.call_reboot(True)
+
+        except ImportError:
+            return False
+        return True
+
+    def reboot_dbus():
+        """Reboot using python-dbus"""
+        try:
+            import dbus  # pylint: disable=import-outside-toplevel
+
+            bus = dbus.SystemBus()
+            obj = bus.get_object("org.freedesktop.login1", "/org/freedesktop/login1")
+            intf = dbus.Interface(obj, "org.freedesktop.login1.Manager")
+            intf.Reboot(True)
+        except ImportError:
+            return False
+        return True
+
+    loop = asyncio.get_event_loop()
+    result = loop.run_until_complete(reboot_dbus_fast())
+    if not result:
+        return reboot_dbus()
+
+    return True
+
+
+def get_system_mem():
+    """Get the total system memory in GB using /proc/meminfo"""
+    with open(os.path.join("/", "proc", "meminfo"), "r", encoding="utf-8") as f:
+        for line in f:
+            if line.startswith("MemTotal:"):
+                # MemTotal line format: "MemTotal:       16384516 kB"
+                # Extract the number and convert from kB to GB
+                mem_kb = int(line.split()[1])
+                return mem_kb / (1024 * 1024)
+    raise ValueError("Could not find MemTotal in /proc/meminfo")
 
 
 def is_root() -> bool:

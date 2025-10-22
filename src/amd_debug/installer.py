@@ -1,4 +1,3 @@
-#!/usr/bin/python3
 # SPDX-License-Identifier: MIT
 
 """
@@ -197,7 +196,7 @@ class DisplayInfoPackage(DistroPackage):
     def __init__(self):
         super().__init__(
             deb="libdisplay-info-bin",
-            rpm="libdisplay-info",
+            rpm="libdisplay-info-tools",
             arch="libdisplay-info",
             message=Headers.MissingDiEdidDecode,
         )
@@ -446,8 +445,8 @@ def parse_args():
     return parser.parse_args()
 
 
-def install_dep_superset() -> None|int:
-    """Install all python supserset dependencies"""
+def install_dep_superset() -> None | int:
+    """Install all python superset dependencies"""
     args = parse_args()
     tool = Installer(tool_debug=args.tool_debug)
     tool.set_requirements(

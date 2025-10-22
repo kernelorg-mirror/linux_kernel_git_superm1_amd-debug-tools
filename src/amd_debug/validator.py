@@ -1,4 +1,3 @@
-#!/usr/bin/python3
 # SPDX-License-Identifier: MIT
 
 import glob
@@ -435,7 +434,6 @@ class SleepValidator(AmdTool):
                 continue
             self.db.record_debug(
                 f"Woke up from input source {device} ({self.wakeup_count[device]}->{count})",
-                "💤",
             )
         self.wakeup_count = wakeup_count
 
@@ -470,7 +468,7 @@ class SleepValidator(AmdTool):
                 self.db.record_debug(f"HW sleep statistics file {p} is missing")
         if not self.hw_sleep_duration:
             self.db.record_cycle_data("Did not reach hardware sleep state", "❌")
-        return self.hw_sleep_duration
+        return self.hw_sleep_duration > 0
 
     def capture_command_line(self):
         """Capture the kernel command line to debug"""
@@ -583,7 +581,6 @@ class SleepValidator(AmdTool):
                     if bit_changed & BIT(bit):
                         self.db.record_debug(
                             f"Idle mask bit {bit} (0x{BIT(bit):x}) changed during suspend",
-                            "○",
                         )
         if self.upep:
             if self.upep_microsoft:
@@ -661,10 +658,10 @@ class SleepValidator(AmdTool):
             check()
         self.db.record_cycle(
             self.requested_duration,
-            self.active_gpios,
-            self.wakeup_irqs,
-            self.kernel_duration,
-            self.hw_sleep_duration,
+            ",".join(str(gpio) for gpio in self.active_gpios),
+            ",".join(str(irq) for irq in self.wakeup_irqs),
+            int(self.kernel_duration),
+            int(self.hw_sleep_duration),
         )
 
     def prep(self):
@@ -702,6 +699,22 @@ class SleepValidator(AmdTool):
                 w.write("+%s\n" % self.requested_duration)
         else:
             print_color("No RTC device found, please manually wake system", "🚦")
+
+    def toggle_nvidia(self, value):
+        """Write to the NVIDIA suspend interface"""
+        p = os.path.join("/", "proc", "driver", "nvidia", "suspend")
+        if not os.path.exists(p):
+            return True
+        fd = os.open(p, os.O_WRONLY | os.O_SYNC)
+        try:
+            os.write(fd, value)
+        except OSError as e:
+            self.db.record_cycle_data(f"Failed to set {value} in NVIDIA {e}", "❌")
+            return False
+        finally:
+            os.close(fd)
+        self.db.record_debug(f"Wrote {value} to NVIDIA driver")
+        return True
 
     @pm_debugging
     def suspend_system(self):
@@ -744,6 +757,8 @@ class SleepValidator(AmdTool):
                 self.db.record_cycle_data("Missing dbus", "❌")
                 return False
         else:
+            if not self.toggle_nvidia(b"suspend"):
+                return False
             old = get_wakeup_count()
             p = os.path.join("/", "sys", "power", "state")
             fd = os.open(p, os.O_WRONLY | os.O_SYNC)
@@ -757,6 +772,8 @@ class SleepValidator(AmdTool):
                 return False
             finally:
                 os.close(fd)
+            if not self.toggle_nvidia(b"resume"):
+                return False
             return True
 
     def unlock_session(self):

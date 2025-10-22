@@ -1,4 +1,3 @@
-#!/usr/bin/python3
 # SPDX-License-Identifier: MIT
 
 import os
@@ -488,7 +487,7 @@ class SleepReport(AmdTool):
             text = line.strip()
             if not text:
                 continue
-            for group in ["🗣️", "❌", "🚦", "🦟", "💯", "○"]:
+            for group in ["🗣️", "❌", "🚦", "🦟", "🚫", "○"]:
                 if line.startswith(group):
                     text = line.split(group)[-1]
                     color = get_group_color(group)

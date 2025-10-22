@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 """Kernel log analysis"""
 
@@ -158,7 +157,7 @@ class KernelLogger:
     def seek_tail(self, tim=None):
         """Seek to the end of the log"""
 
-    def process_callback(self, callback, priority):
+    def process_callback(self, callback, priority=None):
         """Process the log"""
 
     def match_line(self, _matches) -> str:
@@ -175,7 +174,7 @@ class InputFile(KernelLogger):
 
     def __init__(self, fname):
         self.since_support = False
-        self.buffer = None
+        self.buffer = ""
         self.seeked = False
         self.buffer = read_file(fname)
 
@@ -190,7 +189,7 @@ class DmesgLogger(KernelLogger):
 
     def __init__(self):
         self.since_support = False
-        self.buffer = None
+        self.buffer = ""
         self.seeked = False
 
         cmd = ["dmesg", "-h"]
@@ -204,7 +203,7 @@ class DmesgLogger(KernelLogger):
         self._refresh_head()
 
     def _refresh_head(self):
-        self.buffer = []
+        self.buffer = ""
         self.seeked = False
         result = subprocess.run(self.command, check=True, capture_output=True)
         if result.returncode == 0:
@@ -262,7 +261,11 @@ class CySystemdLogger(KernelLogger):
     """Class for logging using systemd journal using cython"""
 
     def __init__(self):
-        from cysystemd.reader import JournalReader, JournalOpenMode, Rule
+        from cysystemd.reader import (
+            JournalReader,
+            JournalOpenMode,
+            Rule,
+        )  # pylint: disable=import-outside-toplevel
 
         boot_reader = JournalReader()
         boot_reader.open(JournalOpenMode.SYSTEM)
@@ -384,6 +387,6 @@ def get_kernel_log(input_file=None) -> KernelLogger:
             kernel_log = DmesgLogger()
         except subprocess.CalledProcessError as e:
             fatal_error(f"{e}")
-            kernel_log = None
+            kernel_log = KernelLogger()
     logging.debug("Kernel log provider: %s", kernel_log.__class__.__name__)
     return kernel_log

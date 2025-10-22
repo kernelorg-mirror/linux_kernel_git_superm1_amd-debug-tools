@@ -326,7 +326,7 @@ class TestPrerequisiteValidator(unittest.TestCase):
             BIT(9) | 1
         )  # Kernel warnings ignored, other taint present
         result = self.validator.check_taint()
-        self.assertFalse(result)
+        self.assertTrue(result)
         self.assertTrue(
             any(isinstance(f, TaintedKernel) for f in self.validator.failures)
         )
@@ -1959,3 +1959,256 @@ class TestPrerequisiteValidator(unittest.TestCase):
         result = self.validator.check_dpia_pg_dmcub()
         self.assertTrue(result)
         self.mock_db.record_prereq.assert_not_called()
+
+    @patch("amd_debug.prerequisites.os.path.exists")
+    def test_capture_nvidia_version_file_missing(self, mock_exists):
+        """Test capture_nvidia when /proc/driver/nvidia/version does not exist"""
+        mock_exists.side_effect = lambda p: False if "version" in p else True
+        result = self.validator.capture_nvidia()
+        self.assertTrue(result)
+        self.mock_db.record_debug_file.assert_not_called()
+        self.mock_db.record_prereq.assert_not_called()
+
+    @patch("amd_debug.prerequisites.os.path.exists")
+    def test_capture_nvidia_gpus_dir_missing(self, mock_exists):
+        """Test capture_nvidia when /proc/driver/nvidia/gpus does not exist"""
+
+        def exists_side_effect(path):
+            if "version" in path:
+                return True
+            if "gpus" in path:
+                return False
+            return True
+
+        mock_exists.side_effect = exists_side_effect
+        result = self.validator.capture_nvidia()
+        self.assertTrue(result)
+        self.mock_db.record_debug_file.assert_called_once_with(
+            "/proc/driver/nvidia/version"
+        )
+        self.mock_db.record_prereq.assert_not_called()
+
+    @patch("amd_debug.prerequisites.os.walk")
+    @patch("amd_debug.prerequisites.os.path.exists")
+    def test_capture_nvidia_success(self, mock_exists, mock_walk):
+        """Test capture_nvidia when NVIDIA GPU files are present and readable"""
+        mock_exists.side_effect = lambda p: True
+        mock_walk.return_value = [
+            ("/proc/driver/nvidia/gpus/0000:01:00.0", [], ["info", "power"])
+        ]
+        result = self.validator.capture_nvidia()
+        self.assertTrue(result)
+        self.mock_db.record_debug_file.assert_any_call("/proc/driver/nvidia/version")
+        self.mock_db.record_debug.assert_any_call("NVIDIA info")
+        self.mock_db.record_debug_file.assert_any_call(
+            "/proc/driver/nvidia/gpus/0000:01:00.0/info"
+        )
+        self.mock_db.record_debug.assert_any_call("NVIDIA power")
+        self.mock_db.record_debug_file.assert_any_call(
+            "/proc/driver/nvidia/gpus/0000:01:00.0/power"
+        )
+
+    @patch("amd_debug.prerequisites.os.walk")
+    @patch("amd_debug.prerequisites.os.path.exists")
+    def test_capture_nvidia_permission_error_on_version(self, mock_exists, mock_walk):
+        """Test capture_nvidia when PermissionError occurs reading version file"""
+        mock_exists.side_effect = lambda p: True if "version" in p else False
+        self.mock_db.record_debug_file.side_effect = PermissionError
+        result = self.validator.capture_nvidia()
+        self.assertTrue(result)
+        self.mock_db.record_prereq.assert_called_with(
+            "NVIDIA GPU version not readable", "👀"
+        )
+
+    @patch("amd_debug.prerequisites.os.walk")
+    @patch("amd_debug.prerequisites.os.path.exists")
+    def test_capture_nvidia_permission_error_on_gpu_file(self, mock_exists, mock_walk):
+        """Test capture_nvidia when PermissionError occurs reading a GPU file"""
+        mock_exists.side_effect = lambda p: True
+        mock_walk.return_value = [
+            ("/proc/driver/nvidia/gpus/0000:01:00.0", [], ["info"])
+        ]
+        self.mock_db.record_debug_file.side_effect = [None, PermissionError]
+        result = self.validator.capture_nvidia()
+        self.assertTrue(result)
+        self.mock_db.record_debug.assert_any_call("NVIDIA info")
+        self.mock_db.record_prereq.assert_called_with(
+            "NVIDIA GPU {f} not readable", "👀"
+        )
+
+    @patch("amd_debug.prerequisites.os.walk")
+    @patch(
+        "builtins.open",
+        new_callable=unittest.mock.mock_open,
+        read_data=b"C1 state info",
+    )
+    def test_capture_cstates_single_file(self, mock_open, mock_walk):
+        """Test capture_cstates with a single cpuidle file"""
+        mock_walk.return_value = [
+            ("/sys/bus/cpu/devices/cpu0/cpuidle", [], ["state1"]),
+        ]
+        self.validator.capture_cstates()
+        self.mock_db.record_debug.assert_called_with(
+            "ACPI C-state information\n└─/sys/bus/cpu/devices/cpu0/cpuidle/state1: C1 state info"
+        )
+
+    @patch("amd_debug.prerequisites.os.walk")
+    @patch("builtins.open", new_callable=mock_open)
+    def test_capture_cstates_multiple_files(self, mock_open_func, mock_walk):
+        """Test capture_cstates with multiple cpuidle files"""
+        # Setup mock file reads for two files
+        file_contents = {
+            "/sys/bus/cpu/devices/cpu0/cpuidle/state1": b"C1 info",
+            "/sys/bus/cpu/devices/cpu0/cpuidle/state2": b"C2 info",
+        }
+
+        def side_effect(path, mode="rb"):
+            mock_file = mock_open(read_data=file_contents[path])()
+            return mock_file
+
+        mock_open_func.side_effect = side_effect
+        mock_walk.return_value = [
+            ("/sys/bus/cpu/devices/cpu0/cpuidle", [], ["state1", "state2"]),
+        ]
+        self.validator.capture_cstates()
+        # The prefix logic is based on order, so check for both lines
+        debug_call = self.mock_db.record_debug.call_args[0][0]
+        self.assertIn("/sys/bus/cpu/devices/cpu0/cpuidle/state1: C1 info", debug_call)
+        self.assertIn("/sys/bus/cpu/devices/cpu0/cpuidle/state2: C2 info", debug_call)
+        self.assertTrue(debug_call.startswith("ACPI C-state information\n"))
+
+    @patch("amd_debug.prerequisites.os.walk")
+    @patch("builtins.open", new_callable=mock_open, read_data=b"")
+    def test_capture_cstates_empty_files(self, _mock_open, mock_walk):
+        """Test capture_cstates with empty cpuidle files"""
+        mock_walk.return_value = [
+            ("/sys/bus/cpu/devices/cpu0/cpuidle", [], ["state1"]),
+        ]
+        self.validator.capture_cstates()
+        self.mock_db.record_debug.assert_called_with(
+            "ACPI C-state information\n└─/sys/bus/cpu/devices/cpu0/cpuidle/state1: "
+        )
+
+    @patch("amd_debug.prerequisites.os.walk")
+    @patch("builtins.open", side_effect=PermissionError)
+    def test_capture_cstates_permission_error(self, _mock_open, mock_walk):
+        """Test capture_cstates when reading cpuidle files raises PermissionError"""
+        mock_walk.return_value = [
+            ("/sys/bus/cpu/devices/cpu0/cpuidle", [], ["state1"]),
+        ]
+        with self.assertRaises(PermissionError):
+            self.validator.capture_cstates()
+        self.mock_db.record_debug.assert_not_called()
+
+    @patch("amd_debug.prerequisites.os.walk")
+    def test_capture_cstates_no_files(self, mock_walk):
+        """Test capture_cstates when no cpuidle files are present"""
+        mock_walk.return_value = [
+            ("/sys/bus/cpu/devices/cpu0/cpuidle", [], []),
+        ]
+        self.validator.capture_cstates()
+        self.mock_db.record_debug.assert_called_with("ACPI C-state information\n")
+
+    @patch("amd_debug.prerequisites.read_file")
+    def test_check_pinctrl_amd_driver_loaded_with_missing_file_error(
+        self, mock_read_file
+    ):
+        """Test check_pinctrl_amd when the driver is loaded but debug file is missing"""
+        mock_read_file.side_effect = FileNotFoundError
+        self.mock_pyudev.list_devices.return_value = [
+            MagicMock(properties={"DRIVER": "amd_gpio"})
+        ]
+
+        result = self.validator.check_pinctrl_amd()
+        self.assertTrue(result)
+        self.mock_db.record_prereq.assert_called_with(
+            "GPIO debugfs not available", "👀"
+        )
+
+    def test_check_amdgpu_no_devices(self):
+        """Test check_amdgpu when no PCI devices are found"""
+        self.mock_pyudev.list_devices.return_value = []
+        result = self.validator.check_amdgpu()
+        self.assertFalse(result)
+        self.mock_db.record_prereq.assert_called_with("Integrated GPU not found", "❌")
+        self.assertTrue(any(isinstance(f, MissingGpu) for f in self.validator.failures))
+
+    def test_check_amdgpu_non_amd_devices(self):
+        """Test check_amdgpu when PCI devices are present but not AMD GPUs"""
+        self.mock_pyudev.list_devices.return_value = [
+            MagicMock(
+                properties={
+                    "PCI_CLASS": "30000",
+                    "PCI_ID": "8086abcd",
+                    "DRIVER": "i915",
+                }
+            ),
+        ]
+        result = self.validator.check_amdgpu()
+        self.assertFalse(result)
+        self.mock_db.record_prereq.assert_called_with("Integrated GPU not found", "❌")
+        self.assertTrue(any(isinstance(f, MissingGpu) for f in self.validator.failures))
+
+    def test_check_amdgpu_driver_not_loaded(self):
+        """Test check_amdgpu when AMD GPU is present but driver is not loaded"""
+        self.mock_pyudev.list_devices.return_value = [
+            MagicMock(
+                properties={"PCI_CLASS": "20000", "PCI_ID": "1111abcd", "DRIVER": None}
+            ),
+            MagicMock(
+                properties={"PCI_CLASS": "30000", "PCI_ID": "1002abcd", "DRIVER": None}
+            ),
+        ]
+        result = self.validator.check_amdgpu()
+        self.assertFalse(result)
+        self.mock_db.record_prereq.assert_called_with(
+            "GPU driver `amdgpu` not loaded", "❌"
+        )
+        self.assertTrue(
+            any(isinstance(f, MissingAmdgpu) for f in self.validator.failures)
+        )
+
+    def test_check_amdgpu_driver_loaded(self):
+        """Test check_amdgpu when AMD GPU is present and driver is loaded"""
+        self.mock_pyudev.list_devices.return_value = [
+            MagicMock(
+                properties={
+                    "PCI_CLASS": "30000",
+                    "PCI_ID": "1002abcd",
+                    "DRIVER": "amdgpu",
+                    "PCI_SLOT_NAME": "0000:01:00.0",
+                }
+            ),
+        ]
+        result = self.validator.check_amdgpu()
+        self.assertTrue(result)
+        self.mock_db.record_prereq.assert_called_with(
+            "GPU driver `amdgpu` bound to 0000:01:00.0", "✅"
+        )
+
+    def test_check_amdgpu_multiple_devices_mixed(self):
+        """Test check_amdgpu with multiple devices, one with driver loaded, one without"""
+        self.mock_pyudev.list_devices.return_value = [
+            MagicMock(
+                properties={
+                    "PCI_CLASS": "30000",
+                    "PCI_ID": "1002abcd",
+                    "DRIVER": "amdgpu",
+                    "PCI_SLOT_NAME": "0000:01:00.0",
+                }
+            ),
+            MagicMock(
+                properties={"PCI_CLASS": "30000", "PCI_ID": "1002abcd", "DRIVER": None}
+            ),
+        ]
+        result = self.validator.check_amdgpu()
+        self.assertFalse(result)
+        self.mock_db.record_prereq.assert_any_call(
+            "GPU driver `amdgpu` bound to 0000:01:00.0", "✅"
+        )
+        self.mock_db.record_prereq.assert_any_call(
+            "GPU driver `amdgpu` not loaded", "❌"
+        )
+        self.assertTrue(
+            any(isinstance(f, MissingAmdgpu) for f in self.validator.failures)
+        )

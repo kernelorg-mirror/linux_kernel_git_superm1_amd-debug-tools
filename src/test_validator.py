@@ -71,7 +71,8 @@ class TestValidator(unittest.TestCase):
         logging.basicConfig(filename="/dev/null", level=logging.DEBUG)
 
     @patch("amd_debug.validator.SleepDatabase")
-    def setUp(self, _db_mock):
+    @patch("subprocess.run")
+    def setUp(self, _db_mock, _mock_run):
         """Set up a mock context for testing"""
         self.validator = SleepValidator(tool_debug=True, bios_debug=False)
 
@@ -263,7 +264,7 @@ class TestValidator(unittest.TestCase):
 
         # Validate debug messages
         mock_record_debug.assert_called_once_with(
-            "Woke up from input source /sys/devices/input0 (3->5)", "💤"
+            "Woke up from input source /sys/devices/input0 (3->5)"
         )
 
         # Stop patches
@@ -556,7 +557,7 @@ class TestValidator(unittest.TestCase):
             # Set attributes for record_cycle
             self.validator.requested_duration = 60
             self.validator.active_gpios = ["GPIO1"]
-            self.validator.wakeup_irqs = [5]
+            self.validator.wakeup_irqs = ["5"]
             self.validator.kernel_duration = 1.5
             self.validator.hw_sleep_duration = 1.0
 
@@ -579,10 +580,10 @@ class TestValidator(unittest.TestCase):
             # Assert record_cycle was called with correct arguments
             mock_record_cycle.assert_called_once_with(
                 self.validator.requested_duration,
-                self.validator.active_gpios,
-                self.validator.wakeup_irqs,
-                self.validator.kernel_duration,
-                self.validator.hw_sleep_duration,
+                ",".join(str(gpio) for gpio in self.validator.active_gpios),
+                ",".join(str(irq) for irq in self.validator.wakeup_irqs),
+                int(self.validator.kernel_duration),
+                int(self.validator.hw_sleep_duration),
             )
 
     def test_program_wakealarm(self):
@@ -830,3 +831,64 @@ class TestValidator(unittest.TestCase):
         )
         mock_os_write.assert_called_once_with(3, b"mem")
         mock_os_close.assert_called_once_with(3)
+
+    @patch("os.path.exists")
+    @patch("os.open")
+    @patch("os.write")
+    @patch("os.close")
+    def test_toggle_nvidia_file_not_exists(
+        self, mock_close, mock_write, mock_open, mock_exists
+    ):
+        """Test toggle_nvidia returns True if NVIDIA suspend file does not exist"""
+        mock_exists.return_value = False
+        result = self.validator.toggle_nvidia(b"suspend")
+        self.assertTrue(result)
+        mock_open.assert_not_called()
+        mock_write.assert_not_called()
+        mock_close.assert_not_called()
+
+    @patch("os.path.exists")
+    @patch("os.open")
+    @patch("os.write")
+    @patch("os.close")
+    def test_toggle_nvidia_success(
+        self, mock_close, mock_write, mock_open, mock_exists
+    ):
+        """Test toggle_nvidia writes value and returns True on success"""
+        mock_exists.return_value = True
+        mock_open.return_value = 42
+        mock_write.return_value = None
+        with patch.object(self.validator.db, "record_debug") as mock_record_debug:
+            result = self.validator.toggle_nvidia(b"suspend")
+            self.assertTrue(result)
+            mock_open.assert_called_once_with(
+                "/proc/driver/nvidia/suspend", os.O_WRONLY | os.O_SYNC
+            )
+            mock_write.assert_called_once_with(42, b"suspend")
+            mock_close.assert_called_once_with(42)
+            mock_record_debug.assert_called_once_with(
+                "Wrote b'suspend' to NVIDIA driver"
+            )
+
+    @patch("os.path.exists")
+    @patch("os.open")
+    @patch("os.write")
+    @patch("os.close")
+    def test_toggle_nvidia_oserror(
+        self, mock_close, mock_write, mock_open, mock_exists
+    ):
+        """Test toggle_nvidia handles OSError and returns False"""
+        mock_exists.return_value = True
+        mock_open.return_value = 99
+        mock_write.side_effect = OSError("write error")
+        with patch.object(
+            self.validator.db, "record_cycle_data"
+        ) as mock_record_cycle_data:
+            result = self.validator.toggle_nvidia(b"resume")
+            self.assertFalse(result)
+            mock_open.assert_called_once_with(
+                "/proc/driver/nvidia/suspend", os.O_WRONLY | os.O_SYNC
+            )
+            mock_write.assert_called_once_with(99, b"resume")
+            mock_close.assert_called_once_with(99)
+            mock_record_cycle_data.assert_called_once()

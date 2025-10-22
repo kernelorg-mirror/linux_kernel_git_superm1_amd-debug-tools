@@ -1,4 +1,3 @@
-#!/usr/bin/python3
 # SPDX-License-Identifier: MIT
 
 from datetime import timedelta
@@ -46,6 +45,19 @@ class RtcAlarmWrong(S0i3Failure):
             "unexpected wakeups or high power consumption."
         )
         self.url = "https://github.com/systemd/systemd/issues/24279"
+
+
+class MissingGpu(S0i3Failure):
+    """GPU device is missing"""
+
+    def __init__(self):
+        super().__init__()
+        self.description = "GPU device is missing"
+        self.explanation = (
+            "Running the s2idle sequence without an integrated GPU is likely "
+            "to cause problems. If you have a mux in BIOS, enable the integrated "
+            "GPU."
+        )
 
 
 class MissingAmdgpu(S0i3Failure):
@@ -467,7 +479,7 @@ class MissingIommuACPI(S0i3Failure):
         super().__init__()
         self.description = f"Device {device} missing from ACPI tables"
         self.explanation = (
-            "The ACPI device {device} is required for suspend to work when the IOMMU is enabled. "
+            f"The ACPI device {device} is required for suspend to work when the IOMMU is enabled. "
             "Please check your BIOS settings and if configured correctly, report a bug to your system vendor."
         )
         self.url = "https://gitlab.freedesktop.org/drm/amd/-/issues/3738#note_2667140"
