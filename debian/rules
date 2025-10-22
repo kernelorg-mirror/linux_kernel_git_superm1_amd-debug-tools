@@ -28,3 +28,6 @@ override_dh_install:
 	PYTHONPATH=src help2man -n "AMD P-state debugging tool" -s 1 -N		\
 		-o debian/amd-debug-tools/usr/share/man/man1/amd-pstate.1	\
 		debian/amd-debug-tools/usr/bin/amd-pstate
+	PYTHONPATH=src help2man -n "AMD TTM debugging tool" -s 1 -N		\
+		-o debian/amd-debug-tools/usr/share/man/man1/amd-ttm.1		\
+		debian/amd-debug-tools/usr/bin/amd-ttm
