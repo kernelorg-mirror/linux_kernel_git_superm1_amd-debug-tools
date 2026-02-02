@@ -54,6 +54,7 @@ from amd_debug.failures import (
     I2CHidBug,
     KernelRingBufferWrapped,
     LimitedCores,
+    MissingAmdCaptureModule,
     MissingAmdgpu,
     MissingAmdgpuFirmware,
     MissingAmdPmc,
@@ -61,6 +62,7 @@ from amd_debug.failures import (
     MissingDriver,
     MissingIommuACPI,
     MissingIommuPolicy,
+    MissingIsp4PlatformDriver,
     MissingThunderbolt,
     MissingXhciHcd,
     MSRFailure,
@@ -979,6 +981,44 @@ class PrerequisiteValidator(AmdTool):
         if debug_str:
             self.db.record_debug(debug_str)
 
+    def check_isp4(self):
+        """Check if camera supported by ISP is present and set up properly"""
+        devices = []
+        for dev in self.pyudev.list_devices(subsystem="acpi"):
+            # look for ACPI device for camera (OMNI5C10:00 is seen today)
+            if not dev.sys_name.startswith("OMNI5C10"):
+                continue
+            p = os.path.join(dev.sys_path, "path")
+            if not os.path.exists(p):
+                continue
+            devices.append(dev)
+        for dev in devices:
+            p = os.path.join(dev.sys_path, "physical_node", "driver")
+            if os.path.exists(p):
+                driver = os.path.basename(os.readlink(p))
+            else:
+                driver = None
+            if driver != "amd-isp4":
+                self.db.record_prereq(
+                    f"ISP4 platform camera driver 'amd-isp4' not bound to {dev.sys_name}",
+                    "❌",
+                )
+                self.failures += [MissingIsp4PlatformDriver()]
+                return False
+            self.db.record_prereq(
+                f"ISP4 platform camera driver 'amd-isp4' bound to {dev.sys_name}", "✅"
+            )
+            # check if `amd_capture` module is loaded
+            p = os.path.join("/", "sys", "module", "amd_capture")
+            if not os.path.exists(p):
+                self.db.record_prereq(
+                    "Camera driver module 'amd_capture' not loaded", "❌"
+                )
+                self.failures += [MissingAmdCaptureModule()]
+                return False
+            self.db.record_prereq("Camera driver module 'amd_capture' loaded", "✅")
+        return True
+
     def map_acpi_path(self):
         """Map of ACPI devices to ACPI paths"""
         devices = []
@@ -1113,11 +1153,22 @@ class PrerequisiteValidator(AmdTool):
         # check for artificially limited CPUs
         p = os.path.join("/", "sys", "devices", "system", "cpu", "kernel_max")
         max_cpus = int(read_file(p)) + 1  # 0 indexed
-        # https://www.amd.com/content/dam/amd/en/documents/processor-tech-docs/programmer-references/24594.pdf
-        # Extended Topology Enumeration (NumLogCores)
-        # CPUID 0x80000026 subleaf 1
+        # https://docs.amd.com/v/u/en-US/40332-PUB_4.08
+        # E.4.24 Function 8000_0026—Extended CPU Topology
         try:
-            _, cpu_count, _, _ = read_cpuid(0, 0x80000026, 1)
+            # Need to discover the socket level to look at all CCDs in the socket
+            for level in range(0, 5):
+                _, _, ecx, _ = read_cpuid(0, 0x80000026, level)
+                level_type = (ecx >> 8) & 0xFF
+                if level_type == 0:
+                    self.db.record_prereq(
+                        "Unable to discover CPU topology, didn't find socket level",
+                        "🚦",
+                    )
+                    return True
+                if level_type == 4:
+                    break
+            _, cpu_count, _, _ = read_cpuid(0, 0x80000026, level)
             if cpu_count > max_cpus:
                 self.db.record_prereq(
                     f"The kernel has been limited to {max_cpus} CPU cores, "
@@ -1321,6 +1372,7 @@ class PrerequisiteValidator(AmdTool):
                 self.check_iommu,
                 self.check_asus_rog_ally,
                 self.check_dpia_pg_dmcub,
+                self.check_isp4,
             ]
 
         checks += [

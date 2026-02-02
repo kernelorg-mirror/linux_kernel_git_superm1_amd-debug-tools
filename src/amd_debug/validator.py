@@ -317,6 +317,9 @@ class SleepValidator(AmdTool):
             actions = read_file(os.path.join(p, "actions"))
             message = f"{Headers.WokeFromIrq} {n} ({chip_name} {hw}-{name} {actions})"
             self.db.record_debug(message)
+            irq = int(n)
+            if irq and irq not in self.wakeup_irqs:
+                self.wakeup_irqs += [irq]
         except OSError:
             pass
         return True
@@ -542,16 +545,6 @@ class SleepValidator(AmdTool):
 
     def analyze_kernel_log(self):
         """Analyze one of the lines from the kernel log"""
-        self.cycle_count = 0
-        self.upep = False
-        self.upep_microsoft = False
-        self.wakeup_irqs = []
-        self.idle_masks = []
-        self.acpi_errors = []
-        self.active_gpios = []
-        self.notify_devices = []
-        self.page_faults = []
-        self.irq1_workaround = False
         self.kernel_log.process_callback(self._analyze_kernel_log_line)
 
         if self.cycle_count:
@@ -641,9 +634,20 @@ class SleepValidator(AmdTool):
 
     def post(self):
         """Post-process the suspend test results"""
+        self.cycle_count = 0
+        self.upep = False
+        self.upep_microsoft = False
+        self.wakeup_irqs = []
+        self.idle_masks = []
+        self.acpi_errors = []
+        self.active_gpios = []
+        self.notify_devices = []
+        self.page_faults = []
+        self.irq1_workaround = False
+
         checks = [
-            self.analyze_kernel_log,
             self.capture_wakeup_irq_data,
+            self.analyze_kernel_log,
             self.check_gpes,
             self.capture_lid,
             self.check_rtc_cmos,

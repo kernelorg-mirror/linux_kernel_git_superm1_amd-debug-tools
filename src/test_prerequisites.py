@@ -8,6 +8,7 @@ This module contains unit tests for the prerequisite functions in the amd-debug-
 import logging
 import unittest
 import subprocess
+import struct
 from unittest.mock import patch, MagicMock, mock_open
 
 from amd_debug.prerequisites import PrerequisiteValidator
@@ -435,6 +436,176 @@ class TestPrerequisiteValidator(unittest.TestCase):
         self.mock_db.record_prereq.assert_called_with(
             "This CPU model does not support hardware sleep over s2idle", "❌"
         )
+
+    @patch("builtins.open", new_callable=mock_open)
+    @patch("amd_debug.prerequisites.read_file")
+    @patch("amd_debug.prerequisites.os.path.exists")
+    def test_check_cpu_limited_cores_single_ccd(
+        self, mock_path_exists, mock_read_file, mock_file_open
+    ):
+        """Test check_cpu with artificially limited CPUs on single-CCD system"""
+        self.validator.cpu_family = 0x19
+        self.validator.cpu_model = 0x74
+        mock_read_file.return_value = "7"  # kernel_max = 7 (8 cores)
+        mock_path_exists.return_value = True
+        # Simulate finding socket level at subleaf 1
+        # First call: subleaf 0, level_type = 1 (not socket)
+        # Second call: subleaf 1, level_type = 4 (socket level)
+        # Third call: read cpu_count from subleaf 1
+        mock_file_open.return_value.read.side_effect = [
+            struct.pack("4I", 0, 0, 0x100, 0),  # subleaf 0: level_type = 1 (thread)
+            struct.pack(
+                "4I", 0, 0, 0x400, 0
+            ),  # subleaf 1: level_type = 4 (socket) - FOUND
+            struct.pack("4I", 0, 16, 0, 0),  # subleaf 1: cpu_count = 16
+        ]
+        result = self.validator.check_cpu()
+        self.assertFalse(result)
+        self.assertTrue(
+            any(isinstance(f, LimitedCores) for f in self.validator.failures)
+        )
+        self.mock_db.record_prereq.assert_called_with(
+            "The kernel has been limited to 8 CPU cores, but the system has 16 cores",
+            "❌",
+        )
+
+    @patch("builtins.open", new_callable=mock_open)
+    @patch("amd_debug.prerequisites.read_file")
+    @patch("amd_debug.prerequisites.os.path.exists")
+    def test_check_cpu_limited_cores_multi_ccd(
+        self, mock_path_exists, mock_read_file, mock_file_open
+    ):
+        """Test check_cpu with multi-CCD system (tests socket-level counting)"""
+        self.validator.cpu_family = 0x19
+        self.validator.cpu_model = 0x74
+        mock_read_file.return_value = "15"  # kernel_max = 15 (16 cores)
+        mock_path_exists.return_value = True
+        # Simulate multi-CCD: iterate through levels to find socket
+        # subleaf 0: level_type = 1 (thread)
+        # subleaf 1: level_type = 2 (core)
+        # subleaf 2: level_type = 3 (complex/CCD)
+        # subleaf 3: level_type = 4 (socket) - FOUND
+        mock_file_open.return_value.read.side_effect = [
+            struct.pack("4I", 0, 0, 0x100, 0),  # subleaf 0: level_type = 1 (thread)
+            struct.pack("4I", 0, 0, 0x200, 0),  # subleaf 1: level_type = 2 (core)
+            struct.pack(
+                "4I", 0, 0, 0x300, 0
+            ),  # subleaf 2: level_type = 3 (complex/CCD)
+            struct.pack(
+                "4I", 0, 0, 0x400, 0
+            ),  # subleaf 3: level_type = 4 (socket) - FOUND
+            struct.pack("4I", 0, 32, 0, 0),  # subleaf 3: cpu_count = 32
+        ]
+        result = self.validator.check_cpu()
+        self.assertFalse(result)
+        self.assertTrue(
+            any(isinstance(f, LimitedCores) for f in self.validator.failures)
+        )
+        self.mock_db.record_prereq.assert_called_with(
+            "The kernel has been limited to 16 CPU cores, but the system has 32 cores",
+            "❌",
+        )
+
+    @patch("builtins.open", new_callable=mock_open)
+    @patch("amd_debug.prerequisites.read_file")
+    @patch("amd_debug.prerequisites.os.path.exists")
+    def test_check_cpu_not_limited(
+        self, mock_path_exists, mock_read_file, mock_file_open
+    ):
+        """Test check_cpu when CPUs are not artificially limited"""
+        self.validator.cpu_family = 0x19
+        self.validator.cpu_model = 0x74
+        mock_read_file.return_value = "31"  # kernel_max = 31 (32 cores)
+        mock_path_exists.return_value = True
+        # Simulate finding socket level
+        mock_file_open.return_value.read.side_effect = [
+            struct.pack("4I", 0, 0, 0x100, 0),  # subleaf 0: level_type = 1
+            struct.pack("4I", 0, 0, 0x400, 0),  # subleaf 1: level_type = 4 (socket)
+            struct.pack("4I", 0, 16, 0, 0),  # subleaf 1: cpu_count = 16
+        ]
+        result = self.validator.check_cpu()
+        self.assertTrue(result)
+        self.mock_db.record_debug.assert_called_with("CPU core count: 16 max: 32")
+
+    @patch("builtins.open", new_callable=mock_open)
+    @patch("amd_debug.prerequisites.read_file")
+    @patch("amd_debug.prerequisites.os.path.exists")
+    def test_check_cpu_socket_level_at_boundary(
+        self, mock_path_exists, mock_read_file, mock_file_open
+    ):
+        """Test check_cpu when socket level is found at the last checked subleaf"""
+        self.validator.cpu_family = 0x19
+        self.validator.cpu_model = 0x74
+        mock_read_file.return_value = "15"  # kernel_max = 15 (16 cores)
+        mock_path_exists.return_value = True
+        # Socket level found at subleaf 4 (last iteration)
+        mock_file_open.return_value.read.side_effect = [
+            struct.pack("4I", 0, 0, 0x100, 0),  # subleaf 0: level_type = 1
+            struct.pack("4I", 0, 0, 0x200, 0),  # subleaf 1: level_type = 2
+            struct.pack("4I", 0, 0, 0x300, 0),  # subleaf 2: level_type = 3
+            struct.pack("4I", 0, 0, 0x000, 0),  # subleaf 3: level_type = 0
+            struct.pack("4I", 0, 0, 0x400, 0),  # subleaf 4: level_type = 4 (socket)
+            struct.pack("4I", 0, 16, 0, 0),  # subleaf 4: cpu_count = 16
+        ]
+        result = self.validator.check_cpu()
+        self.assertTrue(result)
+        self.mock_db.record_prereq.assert_called_with(
+            "Unable to discover CPU topology, didn't find socket level", "🚦"
+        )
+
+    @patch("builtins.open", new_callable=mock_open)
+    @patch("amd_debug.prerequisites.read_file")
+    @patch("amd_debug.prerequisites.os.path.exists")
+    def test_check_cpu_socket_level_first_subleaf(
+        self, mock_path_exists, mock_read_file, mock_file_open
+    ):
+        """Test check_cpu when socket level is found at first subleaf"""
+        self.validator.cpu_family = 0x19
+        self.validator.cpu_model = 0x74
+        mock_read_file.return_value = "7"  # kernel_max = 7 (8 cores)
+        mock_path_exists.return_value = True
+        # Socket level found immediately at subleaf 0
+        mock_file_open.return_value.read.side_effect = [
+            struct.pack(
+                "4I", 0, 0, 0x400, 0
+            ),  # subleaf 0: level_type = 4 (socket) - FOUND
+            struct.pack("4I", 0, 8, 0, 0),  # subleaf 0: cpu_count = 8
+        ]
+        result = self.validator.check_cpu()
+        self.assertTrue(result)
+        self.mock_db.record_debug.assert_called_with("CPU core count: 8 max: 8")
+
+    @patch("builtins.open", side_effect=FileNotFoundError)
+    @patch("amd_debug.prerequisites.read_file")
+    @patch("amd_debug.prerequisites.os.path.exists")
+    def test_check_cpu_cpuid_file_not_found(
+        self, mock_path_exists, mock_read_file, mock_file_open
+    ):
+        """Test check_cpu when cpuid kernel module is not loaded"""
+        self.validator.cpu_family = 0x19
+        self.validator.cpu_model = 0x74
+        mock_read_file.return_value = "7"
+        mock_path_exists.return_value = False
+        result = self.validator.check_cpu()
+        self.assertFalse(result)
+        self.mock_db.record_prereq.assert_called_with(
+            "Unable to check CPU topology: cpuid kernel module not loaded", "❌"
+        )
+
+    @patch("builtins.open", side_effect=PermissionError)
+    @patch("amd_debug.prerequisites.read_file")
+    @patch("amd_debug.prerequisites.os.path.exists")
+    def test_check_cpu_cpuid_permission_error(
+        self, mock_path_exists, mock_read_file, mock_file_open
+    ):
+        """Test check_cpu when there is a permission error accessing cpuid"""
+        self.validator.cpu_family = 0x19
+        self.validator.cpu_model = 0x74
+        mock_read_file.return_value = "7"
+        mock_path_exists.return_value = True
+        result = self.validator.check_cpu()
+        self.assertTrue(result)
+        self.mock_db.record_prereq.assert_called_with("CPUID checks unavailable", "🚦")
 
     @patch("amd_debug.prerequisites.os.walk")
     @patch(
@@ -1112,7 +1283,7 @@ class TestPrerequisiteValidator(unittest.TestCase):
 
     @patch("amd_debug.prerequisites.os.path.exists")
     @patch(
-        "builtins.open",
+        "amd_debug.prerequisites.open",
         new_callable=unittest.mock.mock_open,
         read_data="ignore_wake_value",
     )
@@ -1127,7 +1298,11 @@ class TestPrerequisiteValidator(unittest.TestCase):
         )
 
     @patch("amd_debug.prerequisites.os.path.exists")
-    @patch("builtins.open", new_callable=unittest.mock.mock_open, read_data="(null)")
+    @patch(
+        "amd_debug.prerequisites.open",
+        new_callable=unittest.mock.mock_open,
+        read_data="(null)",
+    )
     def test_capture_disabled_pins_with_null_values(self, _mock_open, mock_path_exists):
         mock_path_exists.side_effect = (
             lambda path: "ignore_wake" in path or "ignore_interrupt" in path
@@ -2090,7 +2265,7 @@ class TestPrerequisiteValidator(unittest.TestCase):
         )
 
     @patch("amd_debug.prerequisites.os.walk")
-    @patch("builtins.open", side_effect=PermissionError)
+    @patch("amd_debug.prerequisites.open", side_effect=PermissionError)
     def test_capture_cstates_permission_error(self, _mock_open, mock_walk):
         """Test capture_cstates when reading cpuidle files raises PermissionError"""
         mock_walk.return_value = [
@@ -2212,3 +2387,152 @@ class TestPrerequisiteValidator(unittest.TestCase):
         self.assertTrue(
             any(isinstance(f, MissingAmdgpu) for f in self.validator.failures)
         )
+
+    @patch("amd_debug.prerequisites.os.path.exists")
+    @patch("amd_debug.prerequisites.os.readlink")
+    def test_check_isp4_no_devices(self, _mock_readlink, _mock_path_exists):
+        """Test check_isp4 when no ISP4 camera devices are found"""
+        self.mock_pyudev.list_devices.return_value = []
+        result = self.validator.check_isp4()
+        self.assertTrue(result)
+        self.mock_db.record_prereq.assert_not_called()
+
+    @patch("amd_debug.prerequisites.os.path.exists")
+    @patch("amd_debug.prerequisites.os.readlink")
+    def test_check_isp4_device_without_path(self, _mock_readlink, mock_path_exists):
+        """Test check_isp4 when ACPI device exists but path file is missing"""
+        mock_path_exists.return_value = False
+        self.mock_pyudev.list_devices.return_value = [
+            MagicMock(sys_path="/sys/devices/acpi/OMNI5C10:00", sys_name="OMNI5C10:00")
+        ]
+        result = self.validator.check_isp4()
+        self.assertTrue(result)
+        self.mock_db.record_prereq.assert_not_called()
+
+    @patch("amd_debug.prerequisites.os.path.exists")
+    @patch("amd_debug.prerequisites.os.readlink")
+    def test_check_isp4_driver_not_bound(self, _mock_readlink, mock_path_exists):
+        """Test check_isp4 when ISP4 driver is not bound to the device"""
+        mock_path_exists.side_effect = lambda p: "path" in p
+        self.mock_pyudev.list_devices.return_value = [
+            MagicMock(sys_path="/sys/devices/acpi/OMNI5C10:00", sys_name="OMNI5C10:00")
+        ]
+        result = self.validator.check_isp4()
+        self.assertFalse(result)
+        self.mock_db.record_prereq.assert_called_with(
+            "ISP4 platform camera driver 'amd-isp4' not bound to OMNI5C10:00", "❌"
+        )
+        self.assertTrue(
+            any(
+                isinstance(f, MissingIsp4PlatformDriver)
+                for f in self.validator.failures
+            )
+        )
+
+    @patch("amd_debug.prerequisites.os.path.exists")
+    @patch(
+        "amd_debug.prerequisites.os.readlink",
+        return_value="/sys/devices/platform/drivers/amd-isp4",
+    )
+    def test_check_isp4_driver_bound_but_module_not_loaded(
+        self, _mock_readlink, mock_path_exists
+    ):
+        """Test check_isp4 when driver is bound but amd_capture module is not loaded"""
+
+        def exists_side_effect(path):
+            if "path" in path or "driver" in path:
+                return True
+            if "amd_capture" in path:
+                return False
+            return True
+
+        mock_path_exists.side_effect = exists_side_effect
+        self.mock_pyudev.list_devices.return_value = [
+            MagicMock(sys_path="/sys/devices/acpi/OMNI5C10:00", sys_name="OMNI5C10:00")
+        ]
+        result = self.validator.check_isp4()
+        self.assertFalse(result)
+        self.mock_db.record_prereq.assert_any_call(
+            "ISP4 platform camera driver 'amd-isp4' bound to OMNI5C10:00", "✅"
+        )
+        self.mock_db.record_prereq.assert_any_call(
+            "Camera driver module 'amd_capture' not loaded", "❌"
+        )
+        self.assertTrue(
+            any(isinstance(f, MissingAmdCaptureModule) for f in self.validator.failures)
+        )
+
+    @patch("amd_debug.prerequisites.os.path.exists")
+    @patch(
+        "amd_debug.prerequisites.os.readlink",
+        return_value="/sys/devices/platform/drivers/amd-isp4",
+    )
+    def test_check_isp4_fully_configured(self, _mock_readlink, mock_path_exists):
+        """Test check_isp4 when ISP4 is fully configured with driver and module"""
+        mock_path_exists.return_value = True
+        self.mock_pyudev.list_devices.return_value = [
+            MagicMock(sys_path="/sys/devices/acpi/OMNI5C10:00", sys_name="OMNI5C10:00")
+        ]
+        result = self.validator.check_isp4()
+        self.assertTrue(result)
+        self.mock_db.record_prereq.assert_any_call(
+            "ISP4 platform camera driver 'amd-isp4' bound to OMNI5C10:00", "✅"
+        )
+        self.mock_db.record_prereq.assert_any_call(
+            "Camera driver module 'amd_capture' loaded", "✅"
+        )
+
+    @patch("amd_debug.prerequisites.os.path.exists")
+    @patch(
+        "amd_debug.prerequisites.os.readlink",
+        return_value="/sys/devices/platform/drivers/other-driver",
+    )
+    def test_check_isp4_wrong_driver(self, _mock_readlink, mock_path_exists):
+        """Test check_isp4 when wrong driver is bound to the device"""
+        mock_path_exists.side_effect = lambda p: "path" in p or "driver" in p
+        self.mock_pyudev.list_devices.return_value = [
+            MagicMock(sys_path="/sys/devices/acpi/OMNI5C10:00", sys_name="OMNI5C10:00")
+        ]
+        result = self.validator.check_isp4()
+        self.assertFalse(result)
+        self.mock_db.record_prereq.assert_called_with(
+            "ISP4 platform camera driver 'amd-isp4' not bound to OMNI5C10:00", "❌"
+        )
+        self.assertTrue(
+            any(
+                isinstance(f, MissingIsp4PlatformDriver)
+                for f in self.validator.failures
+            )
+        )
+
+    @patch("amd_debug.prerequisites.os.path.exists")
+    @patch(
+        "amd_debug.prerequisites.os.readlink",
+        return_value="/sys/devices/platform/drivers/amd-isp4",
+    )
+    def test_check_isp4_multiple_devices(self, _mock_readlink, mock_path_exists):
+        """Test check_isp4 with multiple ISP4 camera devices"""
+        mock_path_exists.return_value = True
+        self.mock_pyudev.list_devices.return_value = [
+            MagicMock(sys_path="/sys/devices/acpi/OMNI5C10:00", sys_name="OMNI5C10:00"),
+            MagicMock(sys_path="/sys/devices/acpi/OMNI5C10:01", sys_name="OMNI5C10:01"),
+        ]
+        result = self.validator.check_isp4()
+        self.assertTrue(result)
+        self.mock_db.record_prereq.assert_any_call(
+            "ISP4 platform camera driver 'amd-isp4' bound to OMNI5C10:00", "✅"
+        )
+        self.mock_db.record_prereq.assert_any_call(
+            "ISP4 platform camera driver 'amd-isp4' bound to OMNI5C10:01", "✅"
+        )
+
+    @patch("amd_debug.prerequisites.os.path.exists")
+    def test_check_isp4_device_not_starting_with_omni5c10(self, mock_path_exists):
+        """Test check_isp4 when ACPI devices don't match OMNI5C10 pattern"""
+        mock_path_exists.return_value = True
+        self.mock_pyudev.list_devices.return_value = [
+            MagicMock(sys_path="/sys/devices/acpi/OTHER:00", sys_name="OTHER:00")
+        ]
+        result = self.validator.check_isp4()
+        self.assertTrue(result)
+        self.mock_db.record_prereq.assert_not_called()
