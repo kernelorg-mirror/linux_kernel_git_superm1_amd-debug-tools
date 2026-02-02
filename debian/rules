@@ -11,12 +11,6 @@ override_dh_install:
 	rm -rf debian/amd-debug-tools/usr/lib/python*/dist-packages/test_*
 	rm -rf debian/amd-debug-tools/usr/lib/python*/dist-packages/launcher.py
 
-	# Install systemd sleep hook
-	mkdir -p debian/amd-debug-tools/usr/lib/systemd/system-sleep
-	mv debian/amd-debug-tools/usr/lib/python*/dist-packages/amd_debug/s2idle-hook \
-		debian/amd-debug-tools/usr/lib/systemd/system-sleep/
-	chmod +x debian/amd-debug-tools/usr/lib/systemd/system-sleep/s2idle-hook
-
 	# Generate man pages using help2man
 	mkdir -p debian/amd-debug-tools/usr/share/man/man1
 	PYTHONPATH=src help2man -n "AMD s2idle debugging tool" -s 1 -N		\
