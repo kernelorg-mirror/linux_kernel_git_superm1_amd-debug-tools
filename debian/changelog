@@ -1,3 +1,10 @@
+amd-debug-tools (0.2.15-1) unstable; urgency=medium
+
+  * New upstream version.
+    - Fixes compat with sudo-rs.
+
+ -- Mario Limonciello <superm1@debian.org>  Tue, 10 Mar 2026 12:33:18 -0500
+
 amd-debug-tools (0.2.14-1) unstable; urgency=medium
 
   * New upstream version
