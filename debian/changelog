@@ -1,3 +1,12 @@
+amd-debug-tools (0.2.16-1) unstable; urgency=medium
+
+  * New upstream version.
+    - Fixes battery calculations
+    - Fixes ISP tests
+    - Dark mode in CSS.
+
+ -- Mario Limonciello <superm1@debian.org>  Fri, 20 Mar 2026 06:51:05 -0500
+
 amd-debug-tools (0.2.15-1) unstable; urgency=medium
 
   * New upstream version.
